@@ -256,7 +256,14 @@ async def showcase(
         embed.set_image(url=image.url)
     # reply privately, then post the embed as the bot so no "used /showcase" line shows
     await interaction.response.defer(ephemeral=True)
-    await interaction.channel.send(embed=embed)
+    try:
+        await interaction.channel.send(embed=embed)
+    except discord.HTTPException as e:
+        return await interaction.followup.send(
+            f"couldn't post here, make sure I have View Channel, Send Messages and "
+            f"Embed Links in this channel ({e.status})",
+            ephemeral=True,
+        )
     await interaction.delete_original_response()
 
 
