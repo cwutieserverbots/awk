@@ -254,7 +254,10 @@ async def showcase(
     )
     if image:
         embed.set_image(url=image.url)
-    await interaction.response.send_message(embed=embed)
+    # reply privately, then post the embed as the bot so no "used /showcase" line shows
+    await interaction.response.defer(ephemeral=True)
+    await interaction.channel.send(embed=embed)
+    await interaction.delete_original_response()
 
 
 @bot.event
