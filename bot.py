@@ -58,25 +58,28 @@ bot = Bot()
 # ───────────────────────── /fp ─────────────────────────
 
 
-@bot.tree.command(name="fp", description="Start a fast pass timer")
-@app_commands.describe(hours="How long the fast pass lasts")
-@app_commands.choices(hours=[
-    app_commands.Choice(name="24 hours", value=24),
-    app_commands.Choice(name="48 hours", value=48),
-    app_commands.Choice(name="72 hours", value=72),
-])
-async def fp(interaction: discord.Interaction, hours: app_commands.Choice[int]):
+async def start_fp(interaction: discord.Interaction, hours: int):
     timers.append({
         "user_id": interaction.user.id,
         "channel_id": interaction.channel_id,
-        "end": time.time() + hours.value * 3600,
+        "end": time.time() + hours * 3600,
         "reminded": False,
     })
     save(TIMERS_PATH, timers)
     await interaction.response.send_message(
-        f"{HEART} : {hours.value}hrs fast past timer has started - "
+        f"{HEART} : {hours}hrs fast past timer has started - "
         f"Reminder will occur 5 hours before time is up . ."
     )
+
+
+@bot.tree.command(name="24", description="Start a 24hr fast pass timer")
+async def fp24(interaction: discord.Interaction):
+    await start_fp(interaction, 24)
+
+
+@bot.tree.command(name="48", description="Start a 48hr fast pass timer")
+async def fp48(interaction: discord.Interaction):
+    await start_fp(interaction, 48)
 
 
 @tasks.loop(seconds=20)
