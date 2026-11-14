@@ -888,27 +888,6 @@ async def showcase_setup(interaction: discord.Interaction):
     await interaction.response.send_modal(ShowcaseSetupModal(prefill=prefill))
 
 
-@bot.tree.command(name="showcase_test", description="Preview the showcase post without sending it to the channel")
-@app_commands.describe(image="The photo to preview with")
-async def showcase_test(interaction: discord.Interaction, image: discord.Attachment):
-    guild = guild_only(interaction)
-    settings = get_settings(guild.id)
-    if not settings or not settings["showcase_text"]:
-        await interaction.response.send_message("Run `/showcase_setup` first.", ephemeral=True)
-        return
-    if not image.content_type or not image.content_type.startswith("image/"):
-        await interaction.response.send_message("Please attach an image file.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    file = await image.to_file(filename=safe_filename(image.filename))
-    embeds = build_showcase_embeds(
-        settings["showcase_text"], settings["showcase_image2_url"], settings["showcase_image3_url"],
-        main_image=f"attachment://{file.filename}",
-    )
-    await interaction.followup.send(embeds=embeds, file=file, ephemeral=True)
-
-
 @bot.tree.command(name="showcase", description="Post a new showcase with your saved template")
 @app_commands.describe(image="The photo to showcase")
 async def showcase(interaction: discord.Interaction, image: discord.Attachment):
