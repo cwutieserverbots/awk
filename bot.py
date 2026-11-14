@@ -1041,7 +1041,6 @@ async def queue_setup(interaction: discord.Interaction, channel: discord.TextCha
     items="What they ordered, like 4x necklaces",
     fastpass="Do they have a fast pass?",
     payment="How they're paying",
-    ticket="Their ticket channel (defaults to the channel you're in)",
 )
 @app_commands.choices(fastpass=[
     app_commands.Choice(name="yes", value="yes"),
@@ -1053,7 +1052,6 @@ async def order(
     items: str,
     fastpass: app_commands.Choice[str],
     payment: str,
-    ticket: discord.TextChannel | None = None,
 ):
     guild = guild_only(interaction)
     settings = get_settings(guild.id)
@@ -1063,7 +1061,7 @@ async def order(
         await interaction.response.send_message("Set the queue channel first with `/queue_setup`.", ephemeral=True)
         return
 
-    ticket_channel = ticket or interaction.channel
+    ticket_channel = interaction.channel  # the ticket is wherever /order was used
     await interaction.response.defer(ephemeral=True)
     embed = discord.Embed(description=build_order_text(user.mention, items, fastpass.value, payment), color=COLOR)
     view = OrderView(ticket_channel.id, disabled={"noted"})  # Noted starts greyed out
