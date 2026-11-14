@@ -98,7 +98,7 @@ def init_db() -> None:
         )
         """
     )
-    for col in ("showcase_text", "showcase_image2_url", "showcase_image3_url"):
+    for col in ("showcase_text", "showcase_image2_url", "showcase_image3_url", "queue_channel_id"):
         try:
             conn.execute(f"ALTER TABLE settings ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
@@ -117,6 +117,7 @@ def upsert_settings(guild_id: int, **kwargs) -> None:
     allowed = {
         "vouch_channel_id", "vouch_count_enabled",
         "showcase_text", "showcase_image2_url", "showcase_image3_url",
+        "queue_channel_id",
     }
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
@@ -152,6 +153,7 @@ class Bot(discord.Client):
 
     async def setup_hook(self):
         init_db()
+        self.add_dynamic_items(OrderButton)  # keeps the order buttons working after a restart
         await self.tree.sync()
         timer_loop.start()
         update_vouch_counts.start()
@@ -936,6 +938,166 @@ async def showcase(interaction: discord.Interaction, image: discord.Attachment):
         )
         return
     await interaction.delete_original_response()
+
+
+# ───────────────────────── orders ─────────────────────────
+# /order posts the order in the queue channel. The Working on / Done buttons
+# message the customer in their ticket channel.
+
+ORDER_BORDER = (
+    "<:dnsawk:1566483123775086812><:dnsawk2:1566483152313258125><:dnsawk:1566483123775086812>"
+    "<:dnsawk2:1566483152313258125><:dnsawk:1566483123775086812><:dnsawk:1566483123775086812>"
+    "<:dnsawk2:1566483152313258125><:dnsawk:1566483123775086812><:dnsawk2:1566483152313258125>"
+    "<:dnsawk:1566483123775086812>"
+)
+ORDER_HEADER = "જ⁀➴  ׁ ׅ  . . <:pinkoutlineheartawk:1566486491440357396>  . . ﹒  ◡◡"
+ORDER_DOT = "<:whitedotawk:1564404632934154391>"
+
+# key -> (label, emoji), in the order they show on the message
+ORDER_BUTTONS = {
+    "noted": ("Noted", "<:whiteribbonawk:1566486396259008553>"),
+    "working": ("Working on", "<:whiteheartawk:1566486532980740266>"),
+    "done": ("Done", "<:pinkribbonawk:1566486362360782990>"),
+}
+
+
+def build_order_text(user_mention: str, items: str, fastpass: str, payment: str) -> str:
+    return (
+        f"{ORDER_BORDER}\n"
+        f"{ORDER_HEADER}\n"
+        f": ✐ : New Order\n"
+        f"{ORDER_DOT}  . . ﹒ User : {user_mention}\n\n"
+        f"{ORDER_DOT}  . . ﹒ Item(s) : {items}\n\n"
+        f"{ORDER_DOT}  . . ﹒ Fast Pass : {fastpass}\n\n"
+        f"{ORDER_DOT}  . . ﹒ Payment : {payment}\n\n"
+        f"{ORDER_HEADER}\n"
+        f"{ORDER_BORDER}"
+    )
+
+
+class OrderButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"order:(?P<key>noted|working|done):(?P<ticket>\d+)",
+):
+    # the ticket channel id lives in the button's custom_id, so it survives restarts
+    def __init__(self, key: str, ticket_id: int, disabled: bool = False):
+        label, emoji = ORDER_BUTTONS[key]
+        super().__init__(
+            discord.ui.Button(
+                label=label,
+                emoji=emoji,
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"order:{key}:{ticket_id}",
+                disabled=disabled,
+            )
+        )
+        self.key = key
+        self.ticket_id = ticket_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match: re.Match):
+        return cls(match["key"], int(match["ticket"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild is None or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("only staff can use these buttons", ephemeral=True)
+            return
+
+        # rebuild the button states from the message so every order keeps its own state
+        disabled = set()
+        for row in interaction.message.components:
+            for child in getattr(row, "children", []):
+                cid = getattr(child, "custom_id", None) or ""
+                if getattr(child, "disabled", False) and cid.startswith("order:"):
+                    disabled.add(cid.split(":")[1])
+        disabled.add(self.key)
+        if self.key == "done":
+            disabled |= set(ORDER_BUTTONS)
+        await interaction.response.edit_message(view=OrderView(self.ticket_id, disabled))
+
+        if self.key == "noted":
+            return
+
+        desc = interaction.message.embeds[0].description if interaction.message.embeds else ""
+        m = re.search(r"<@!?(\d+)>", desc or "")
+        ticket = interaction.guild.get_channel(self.ticket_id)
+        if not m or ticket is None:
+            await interaction.followup.send("I can't find that customer's ticket anymore, so nothing was sent.", ephemeral=True)
+            return
+
+        mention = f"<@{m.group(1)}>"
+        if self.key == "working":
+            msg = f"♡ : {mention} your order is being worked on! . ."
+        else:
+            msg = f"♡ : {mention} your order has been completed, please vouch and wait for delivery! . ."
+        try:
+            await ticket.send(msg)
+        except discord.HTTPException:
+            await interaction.followup.send(f"I couldn't post in {ticket.mention}, check my permissions there.", ephemeral=True)
+            return
+        await interaction.followup.send(f"{HEART} sent in {ticket.mention}", ephemeral=True)
+
+
+class OrderView(discord.ui.View):
+    def __init__(self, ticket_id: int, disabled: set[str] | None = None):
+        super().__init__(timeout=None)
+        disabled = disabled or set()
+        for key in ORDER_BUTTONS:
+            self.add_item(OrderButton(key, ticket_id, disabled=key in disabled))
+
+
+@bot.tree.command(name="queue_setup", description="Set the queue channel where new orders get posted")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(channel="The queue channel")
+async def queue_setup(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild = guild_only(interaction)
+    upsert_settings(guild.id, queue_channel_id=str(channel.id))
+    await interaction.response.send_message(f"{HEART} queue channel set to {channel.mention}", ephemeral=True)
+
+
+@bot.tree.command(name="order", description="Post a new order in the queue channel")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(
+    user="The customer",
+    items="What they ordered, like 4x necklaces",
+    fastpass="Do they have a fast pass?",
+    payment="How they're paying",
+    ticket="Their ticket channel (defaults to the channel you're in)",
+)
+@app_commands.choices(fastpass=[
+    app_commands.Choice(name="yes", value="yes"),
+    app_commands.Choice(name="no", value="no"),
+])
+async def order(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    items: str,
+    fastpass: app_commands.Choice[str],
+    payment: str,
+    ticket: discord.TextChannel | None = None,
+):
+    guild = guild_only(interaction)
+    settings = get_settings(guild.id)
+    qid = settings["queue_channel_id"] if settings else None
+    queue = guild.get_channel(int(qid)) if qid else None
+    if not isinstance(queue, discord.TextChannel):
+        await interaction.response.send_message("Set the queue channel first with `/queue_setup`.", ephemeral=True)
+        return
+
+    ticket_channel = ticket or interaction.channel
+    await interaction.response.defer(ephemeral=True)
+    embed = discord.Embed(description=build_order_text(user.mention, items, fastpass.value, payment), color=COLOR)
+    view = OrderView(ticket_channel.id)
+    try:
+        await queue.send(embed=embed, view=view)
+    except discord.HTTPException as e:
+        await interaction.followup.send(
+            f"couldn't post in {queue.mention}, make sure I have View Channel, Send Messages and "
+            f"Embed Links there ({e.status})",
+            ephemeral=True,
+        )
+        return
+    await interaction.followup.send(f"{HEART} order posted in {queue.mention}", ephemeral=True)
 
 
 @bot.event
