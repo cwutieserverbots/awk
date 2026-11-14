@@ -579,16 +579,14 @@ async def vouch_setup(interaction: discord.Interaction, channel: discord.TextCha
 
 @bot.tree.command(name="vouch_backup", description="Save every vouch already in the vouch channel to the backup")
 @app_commands.checks.has_permissions(manage_guild=True)
-@app_commands.describe(channel="Vouch channel to scan (defaults to the one from /vouch_setup)")
-async def vouch_backup(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+async def vouch_backup(interaction: discord.Interaction):
     guild = guild_only(interaction)
     settings = get_settings(guild.id)
+    cid = settings["vouch_channel_id"] if settings else None
+    found = guild.get_channel(int(cid)) if cid else None
+    channel = found if isinstance(found, discord.TextChannel) else None
     if channel is None:
-        cid = settings["vouch_channel_id"] if settings else None
-        found = guild.get_channel(int(cid)) if cid else None
-        channel = found if isinstance(found, discord.TextChannel) else None
-    if channel is None:
-        await interaction.response.send_message("Pick a channel, or run `/vouch_setup` first so I know which one is your vouch channel.", ephemeral=True)
+        await interaction.response.send_message("Run `/vouch_setup` first so I know which one is your vouch channel.", ephemeral=True)
         return
     if guild.id in _vouch_busy:
         await interaction.response.send_message("A vouch backup/restore is already running here, wait for it to finish.", ephemeral=True)
