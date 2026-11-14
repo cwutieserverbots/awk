@@ -388,7 +388,14 @@ async def run_vouch_restore(interaction: discord.Interaction, source_gid: int, c
     posted = failed = skipped = 0
     try:
         _avatar_cache.clear()
-        rows = db_all("SELECT * FROM vouches WHERE guild_id = ? ORDER BY created_at ASC, id ASC", (source_gid,))
+        if source_gid == guild.id:
+            # same-server restore: use the originals, skip any already sitting in the target channel
+            rows = db_all(
+                "SELECT * FROM vouches WHERE guild_id = ? AND origin_key IS NULL AND channel_id != ? ORDER BY created_at ASC, id ASC",
+                (source_gid, channel.id),
+            )
+        else:
+            rows = db_all("SELECT * FROM vouches WHERE guild_id = ? ORDER BY created_at ASC, id ASC", (source_gid,))
 
         # purge restored copies whose channel was deleted
         conn = get_db()
@@ -617,17 +624,18 @@ async def vouch_source_autocomplete(interaction: discord.Interaction, current: s
     rows = db_all("SELECT guild_id, COUNT(*) AS n FROM vouches GROUP BY guild_id ORDER BY n DESC")
     choices = []
     for r in rows:
-        if interaction.guild_id and r["guild_id"] == interaction.guild_id:
-            continue
-        g = bot.get_guild(r["guild_id"])
-        label = f"{g.name if g else 'old server'} ({r['guild_id']}) - {r['n']} vouches"
+        if r["guild_id"] == interaction.guild_id:
+            label = f"this server ({r['guild_id']}) - {r['n']} vouches"
+        else:
+            g = bot.get_guild(r["guild_id"])
+            label = f"{g.name if g else 'old server'} ({r['guild_id']}) - {r['n']} vouches"
         if current and current.lower() not in label.lower():
             continue
         choices.append(app_commands.Choice(name=label[:100], value=str(r["guild_id"])))
     return choices[:25]
 
 
-@bot.tree.command(name="vouch_restore", description="Re-post the backed-up vouches from your old server into a channel here")
+@bot.tree.command(name="vouch_restore", description="Re-post backed-up vouches (from an old server, or this one) into a channel here")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.describe(
     source="Which backup to restore (pick from the list, or paste the old server's ID)",
@@ -641,14 +649,17 @@ async def vouch_restore(interaction: discord.Interaction, source: str, channel: 
     except ValueError:
         await interaction.response.send_message("Pick a backup from the list or paste the old server's ID (numbers only).", ephemeral=True)
         return
-    if source_gid == guild.id:
-        await interaction.response.send_message("That's this server, pick the backup from your old one.", ephemeral=True)
-        return
     if guild.id in _vouch_busy:
         await interaction.response.send_message("A vouch backup/restore is already running here, wait for it to finish.", ephemeral=True)
         return
 
-    row = db_one("SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ?", (source_gid,))
+    if source_gid == guild.id:
+        row = db_one(
+            "SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ? AND origin_key IS NULL AND channel_id != ?",
+            (source_gid, channel.id),
+        )
+    else:
+        row = db_one("SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ?", (source_gid,))
     total = row["n"] if row else 0
     if total == 0:
         await interaction.response.send_message(f"I don't have any vouches backed up for server `{source_gid}`. Pick one from the list when you type the `source` option.", ephemeral=True)
@@ -660,7 +671,9 @@ async def vouch_restore(interaction: discord.Interaction, source: str, channel: 
         return
 
     settings = get_settings(guild.id)
-    if not settings or not settings["vouch_channel_id"]:
+    saved_id = settings["vouch_channel_id"] if settings else None
+    if not saved_id or guild.get_channel(int(saved_id)) is None:
+        # no vouch channel yet, or the old one was deleted
         upsert_settings(guild.id, vouch_channel_id=str(channel.id))
 
     note = ""
