@@ -365,7 +365,7 @@ async def store_vouch_message(message: discord.Message) -> bool:
 def safe_webhook_name(name: str | None) -> str:
     name = (name or "").strip() or "unknown"
     # webhooks can't have "discord" or "clyde" in the name, so break those words up invisibly
-    name = re.sub(r"(?i)(discord|clyde)", lambda m: m.group(0)[0] + "​" + m.group(0)[1:], name)
+    name = re.sub(r"(?i)(discord|clyde)", lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:], name)
     return name[:80]
 
 
@@ -1087,7 +1087,7 @@ async def order(
     ticket_channel = ticket or interaction.channel
     await interaction.response.defer(ephemeral=True)
     embed = discord.Embed(description=build_order_text(user.mention, items, fastpass.value, payment), color=COLOR)
-    view = OrderView(ticket_channel.id)
+    view = OrderView(ticket_channel.id, disabled={"noted"})  # Noted starts greyed out
     try:
         await queue.send(embed=embed, view=view)
     except discord.HTTPException as e:
