@@ -920,7 +920,7 @@ async def showcase(interaction: discord.Interaction, image: discord.Attachment):
 
 
 # ───────────────────────── orders ─────────────────────────
-# /order posts the order in the queue channel. The Working on / Done buttons
+# /queue posts the order in the queue channel. The Working on / Done buttons
 # message the customer in their ticket channel.
 
 ORDER_BORDER = (
@@ -1034,7 +1034,7 @@ async def queue_setup(interaction: discord.Interaction, channel: discord.TextCha
     await interaction.response.send_message(f"{HEART} queue channel set to {channel.mention}", ephemeral=True)
 
 
-@bot.tree.command(name="order", description="Post a new order in the queue channel")
+@bot.tree.command(name="queue", description="Post a new order in the queue channel")
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.describe(
     user="The customer",
@@ -1061,7 +1061,7 @@ async def order(
         await interaction.response.send_message("Set the queue channel first with `/queue_setup`.", ephemeral=True)
         return
 
-    ticket_channel = interaction.channel  # the ticket is wherever /order was used
+    ticket_channel = interaction.channel  # the ticket is wherever /queue was used
     await interaction.response.defer(ephemeral=True)
     embed = discord.Embed(description=build_order_text(user.mention, items, fastpass.value, payment), color=COLOR)
     view = OrderView(ticket_channel.id, disabled={"noted"})  # Noted starts greyed out
