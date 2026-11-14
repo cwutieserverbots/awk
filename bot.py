@@ -239,8 +239,12 @@ _vouch_busy: set[int] = set()
 _avatar_cache: dict[int, str | None] = {}
 
 
-def vouch_total(guild_id: int) -> int:
-    row = db_one("SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ?", (guild_id,))
+def vouch_total(guild_id: int, channel_id: int | None = None) -> int:
+    # with a channel, only count vouches that live in that channel (so old + restored copies don't double up)
+    if channel_id is not None:
+        row = db_one("SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ? AND channel_id = ?", (guild_id, channel_id))
+    else:
+        row = db_one("SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ?", (guild_id,))
     return row["n"] if row else 0
 
 
@@ -521,7 +525,7 @@ async def update_vouch_counts():
             continue
 
         _vouch_count_dirty.discard(gid)
-        new_name = build_counted_channel_name(channel.name, vouch_total(gid))
+        new_name = build_counted_channel_name(channel.name, vouch_total(gid, channel.id))
         if new_name == channel.name:
             continue
         try:
@@ -615,7 +619,7 @@ async def vouch_backup(interaction: discord.Interaction):
 
     await interaction.followup.send(
         f"{HEART} Scanned **{scanned}** message{'s' if scanned != 1 else ''} in {channel.mention} and saved **{new}** new vouch{'es' if new != 1 else ''}.\n"
-        f"Total vouches in the backup: **{vouch_total(guild.id)}**",
+        f"Vouches saved from {channel.mention}: **{vouch_total(guild.id, channel.id)}**",
         ephemeral=True,
     )
 
@@ -706,7 +710,7 @@ async def vouch_count(interaction: discord.Interaction, enabled: bool = True):
         return
 
     request_vouch_count_update(guild.id)
-    total = vouch_total(guild.id)
+    total = vouch_total(guild.id, channel.id)
     preview = build_counted_channel_name(channel.name, total)
     await interaction.response.send_message(
         f"{HEART} Auto vouch count is on. {channel.mention} will be renamed to `{preview}` and the number updates as new vouches come in (Discord only lets channels be renamed about twice every 10 minutes, so it can lag a few minutes).\n"
