@@ -98,6 +98,11 @@ def init_db() -> None:
         )
         """
     )
+    for col in ("showcase_text", "showcase_image2_url", "showcase_image3_url"):
+        try:
+            conn.execute(f"ALTER TABLE settings ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vouches_guild ON vouches (guild_id, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vouch_files_vouch ON vouch_files (vouch_id)")
     conn.commit()
@@ -109,7 +114,10 @@ def get_settings(guild_id: int):
 
 
 def upsert_settings(guild_id: int, **kwargs) -> None:
-    allowed = {"vouch_channel_id", "vouch_count_enabled"}
+    allowed = {
+        "vouch_channel_id", "vouch_count_enabled",
+        "showcase_text", "showcase_image2_url", "showcase_image3_url",
+    }
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
         return
@@ -802,37 +810,131 @@ async def tax(interaction: discord.Interaction, amount: str):
     await interaction.response.send_message(embed=embed)
 
 
-# ───────────────────────── /showcase ─────────────────────────
-# basic placeholder, send me your old one and I'll match it
+# ───────────────────────── showcase ─────────────────────────
 
 
-@bot.tree.command(name="showcase", description="Post a showcase")
-@app_commands.describe(text="Description", image="Image to show")
-async def showcase(
-    interaction: discord.Interaction,
-    text: str = None,
-    image: discord.Attachment = None,
-):
-    if not text and not image:
-        return await interaction.response.send_message(
-            "add some text or an image", ephemeral=True
-        )
-    embed = discord.Embed(description=text, color=COLOR)
-    embed.set_author(
-        name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url
+def build_showcase_embeds(text, image2, image3, main_image=None):
+    first = discord.Embed(description=text, color=COLOR)
+    if main_image:
+        first.set_image(url=main_image)
+    embeds = [first]
+    for url in (image2, image3):
+        if url:
+            e = discord.Embed(color=COLOR)
+            e.set_image(url=url)
+            embeds.append(e)
+    return embeds
+
+
+class ShowcaseSetupModal(discord.ui.Modal, title="Showcase Template"):
+    showcase_text = discord.ui.TextInput(
+        label="Fixed text (top embed description)",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+        placeholder="The header text reused on every showcase post",
     )
-    if image:
-        embed.set_image(url=image.url)
-    # reply privately, then post the embed as the bot so no "used /showcase" line shows
-    await interaction.response.defer(ephemeral=True)
-    try:
-        await interaction.channel.send(embed=embed)
-    except discord.HTTPException as e:
-        return await interaction.followup.send(
-            f"couldn't post here, make sure I have View Channel, Send Messages and "
-            f"Embed Links in this channel ({e.status})",
+    image2_url = discord.ui.TextInput(
+        label="2nd embed image URL (fixed)", required=False, max_length=1000,
+        placeholder="e.g.  https://i.imgur.com/abc123.gif",
+    )
+    image3_url = discord.ui.TextInput(
+        label="3rd embed image URL (fixed, optional)", required=False, max_length=1000,
+        placeholder="e.g.  https://i.imgur.com/xyz456.gif",
+    )
+
+    def __init__(self, prefill: dict | None = None):
+        super().__init__()
+        if prefill:
+            if prefill.get("showcase_text"):
+                self.showcase_text.default = prefill["showcase_text"]
+            if prefill.get("showcase_image2_url"):
+                self.image2_url.default = prefill["showcase_image2_url"]
+            if prefill.get("showcase_image3_url"):
+                self.image3_url.default = prefill["showcase_image3_url"]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = guild_only(interaction)
+        text = str(self.showcase_text).replace("\\n", "\n")
+        img2 = str(self.image2_url).strip()
+        img3 = str(self.image3_url).strip()
+        upsert_settings(guild.id, showcase_text=text, showcase_image2_url=img2, showcase_image3_url=img3)
+        await interaction.response.send_message(
+            f"{HEART} Showcase template saved! When you run `/showcase`, this text goes in the 1st embed "
+            f"alongside your photo, followed by the fixed image(s) below.",
+            embeds=build_showcase_embeds(text, img2, img3),
             ephemeral=True,
         )
+
+
+def safe_filename(name: str | None) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name or "") or "image.png"
+
+
+@bot.tree.command(name="showcase_setup", description="Set the fixed showcase template (text + the 2nd/3rd banner images)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def showcase_setup(interaction: discord.Interaction):
+    guild = guild_only(interaction)
+    settings = get_settings(guild.id)
+    prefill = None
+    if settings:
+        prefill = {
+            "showcase_text": settings["showcase_text"],
+            "showcase_image2_url": settings["showcase_image2_url"],
+            "showcase_image3_url": settings["showcase_image3_url"],
+        }
+    await interaction.response.send_modal(ShowcaseSetupModal(prefill=prefill))
+
+
+@bot.tree.command(name="showcase_test", description="Preview the showcase post without sending it to the channel")
+@app_commands.describe(image="The photo to preview with")
+async def showcase_test(interaction: discord.Interaction, image: discord.Attachment):
+    guild = guild_only(interaction)
+    settings = get_settings(guild.id)
+    if not settings or not settings["showcase_text"]:
+        await interaction.response.send_message("Run `/showcase_setup` first.", ephemeral=True)
+        return
+    if not image.content_type or not image.content_type.startswith("image/"):
+        await interaction.response.send_message("Please attach an image file.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    file = await image.to_file(filename=safe_filename(image.filename))
+    embeds = build_showcase_embeds(
+        settings["showcase_text"], settings["showcase_image2_url"], settings["showcase_image3_url"],
+        main_image=f"attachment://{file.filename}",
+    )
+    await interaction.followup.send(embeds=embeds, file=file, ephemeral=True)
+
+
+@bot.tree.command(name="showcase", description="Post a new showcase with your saved template")
+@app_commands.describe(image="The photo to showcase")
+async def showcase(interaction: discord.Interaction, image: discord.Attachment):
+    guild = guild_only(interaction)
+    settings = get_settings(guild.id)
+    if not settings or not settings["showcase_text"]:
+        await interaction.response.send_message("Run `/showcase_setup` first to set the fixed template text.", ephemeral=True)
+        return
+    if not image.content_type or not image.content_type.startswith("image/"):
+        await interaction.response.send_message("Please attach an image file.", ephemeral=True)
+        return
+
+    # reply privately, then post as the bot so no "used /showcase" line shows
+    await interaction.response.defer(ephemeral=True)
+    file = await image.to_file(filename=safe_filename(image.filename))
+    embeds = build_showcase_embeds(
+        settings["showcase_text"], settings["showcase_image2_url"], settings["showcase_image3_url"],
+        main_image=f"attachment://{file.filename}",
+    )
+    try:
+        await interaction.channel.send(embeds=embeds, file=file)
+    except discord.HTTPException as e:
+        await interaction.followup.send(
+            f"couldn't post here, make sure I have View Channel, Send Messages, Embed Links and "
+            f"Attach Files in this channel ({e.status})",
+            ephemeral=True,
+        )
+        return
     await interaction.delete_original_response()
 
 
