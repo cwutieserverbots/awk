@@ -6,7 +6,6 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime
 from pathlib import Path
 
 import discord
@@ -340,15 +339,8 @@ async def current_avatar_url(author_id, fallback):
     return _avatar_cache[author_id] or fallback
 
 
-async def post_restored_vouch(channel, webhook, row, files: list[tuple[str, bytes]], show_date: bool):
-    content = row["content"] or ""
-    if show_date:
-        try:
-            ts = int(datetime.fromisoformat(row["created_at"]).timestamp())
-            content = f"{content}\n-# originally posted <t:{ts}:D>".strip()
-        except ValueError:
-            pass
-    content = content[:2000]
+async def post_restored_vouch(channel, webhook, row, files: list[tuple[str, bytes]]):
+    content = (row["content"] or "")[:2000]
     name = row["author_name"] or "unknown"
     avatar = await current_avatar_url(row["author_id"], row["author_avatar_url"]) or None
     no_mentions = discord.AllowedMentions.none()
@@ -389,7 +381,7 @@ async def post_restored_vouch(channel, webhook, row, files: list[tuple[str, byte
     return None
 
 
-async def run_vouch_restore(interaction: discord.Interaction, source_gid: int, channel: discord.TextChannel, show_dates: bool) -> None:
+async def run_vouch_restore(interaction: discord.Interaction, source_gid: int, channel: discord.TextChannel) -> None:
     guild = interaction.guild
     _vouch_busy.add(guild.id)
     webhook = None
@@ -425,7 +417,7 @@ async def run_vouch_restore(interaction: discord.Interaction, source_gid: int, c
 
         for i, row in enumerate(todo, start=1):
             files = [(f["filename"], bytes(f["data"])) for f in db_all("SELECT filename, data FROM vouch_files WHERE vouch_id = ? ORDER BY id", (row["id"],))]
-            msg = await post_restored_vouch(channel, webhook, row, files, show_dates)
+            msg = await post_restored_vouch(channel, webhook, row, files)
             if msg is None:
                 failed += 1
             else:
@@ -479,12 +471,11 @@ async def run_vouch_restore(interaction: discord.Interaction, source_gid: int, c
 
 
 class VouchRestoreConfirmView(discord.ui.View):
-    def __init__(self, owner_id: int, source_gid: int, channel: discord.TextChannel, show_dates: bool):
+    def __init__(self, owner_id: int, source_gid: int, channel: discord.TextChannel):
         super().__init__(timeout=120)
         self.owner_id = owner_id
         self.source_gid = source_gid
         self.channel = channel
-        self.show_dates = show_dates
 
     @discord.ui.button(label="Restore vouches", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -495,7 +486,7 @@ class VouchRestoreConfirmView(discord.ui.View):
             await interaction.response.edit_message(content="A vouch backup/restore is already running here, wait for it to finish.", view=None)
             return
         await interaction.response.edit_message(content="Starting restore...", view=None)
-        await run_vouch_restore(interaction, self.source_gid, self.channel, self.show_dates)
+        await run_vouch_restore(interaction, self.source_gid, self.channel)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -641,10 +632,9 @@ async def vouch_source_autocomplete(interaction: discord.Interaction, current: s
 @app_commands.describe(
     source="Which backup to restore (pick from the list, or paste the old server's ID)",
     channel="Channel to post the restored vouches in (becomes your vouch channel if none is set)",
-    show_dates="Add a small 'originally posted' date under each restored vouch",
 )
 @app_commands.autocomplete(source=vouch_source_autocomplete)
-async def vouch_restore(interaction: discord.Interaction, source: str, channel: discord.TextChannel, show_dates: bool = False):
+async def vouch_restore(interaction: discord.Interaction, source: str, channel: discord.TextChannel):
     guild = guild_only(interaction)
     try:
         source_gid = int(source.strip())
@@ -680,7 +670,7 @@ async def vouch_restore(interaction: discord.Interaction, source: str, channel: 
     await interaction.response.send_message(
         f"Restore **{total}** vouch{'es' if total != 1 else ''} from server `{source_gid}` into {channel.mention}?\n"
         f"They'll post in their original order, one at a time (about {max(1, round(total * VOUCH_RESTORE_DELAY_SECONDS / 60))} min).{note}",
-        view=VouchRestoreConfirmView(interaction.user.id, source_gid, channel, show_dates),
+        view=VouchRestoreConfirmView(interaction.user.id, source_gid, channel),
         ephemeral=True,
     )
 
