@@ -248,6 +248,34 @@ def vouch_total(guild_id: int, channel_id: int | None = None) -> int:
     return row["n"] if row else 0
 
 
+# a restored copy is skipped when its original is also in the same backup, so nothing posts twice
+_RESTORABLE_WHERE = (
+    "v.guild_id = ? AND NOT (v.origin_key IS NOT NULL AND EXISTS ("
+    "SELECT 1 FROM vouches o WHERE o.guild_id = v.guild_id AND o.origin_key IS NULL "
+    "AND (CAST(o.guild_id AS TEXT) || ':' || CAST(o.message_id AS TEXT)) = v.origin_key))"
+)
+
+
+def restorable_count(source_gid: int, exclude_channel_id: int | None = None) -> int:
+    sql = f"SELECT COUNT(*) AS n FROM vouches v WHERE {_RESTORABLE_WHERE}"
+    params: tuple = (source_gid,)
+    if exclude_channel_id is not None:
+        sql += " AND v.channel_id != ?"
+        params += (exclude_channel_id,)
+    row = db_one(sql, params)
+    return row["n"] if row else 0
+
+
+def restorable_rows(source_gid: int, exclude_channel_id: int | None = None):
+    sql = f"SELECT v.* FROM vouches v WHERE {_RESTORABLE_WHERE}"
+    params: tuple = (source_gid,)
+    if exclude_channel_id is not None:
+        sql += " AND v.channel_id != ?"
+        params += (exclude_channel_id,)
+    sql += " ORDER BY v.created_at ASC, v.id ASC"
+    return db_all(sql, params)
+
+
 def request_vouch_count_update(guild_id: int) -> None:
     _vouch_count_dirty.add(guild_id)
 
@@ -392,14 +420,8 @@ async def run_vouch_restore(interaction: discord.Interaction, source_gid: int, c
     posted = failed = skipped = 0
     try:
         _avatar_cache.clear()
-        if source_gid == guild.id:
-            # same-server restore: use the originals, skip any already sitting in the target channel
-            rows = db_all(
-                "SELECT * FROM vouches WHERE guild_id = ? AND origin_key IS NULL AND channel_id != ? ORDER BY created_at ASC, id ASC",
-                (source_gid, channel.id),
-            )
-        else:
-            rows = db_all("SELECT * FROM vouches WHERE guild_id = ? ORDER BY created_at ASC, id ASC", (source_gid,))
+        # same-server restore also skips anything already sitting in the target channel
+        rows = restorable_rows(source_gid, channel.id if source_gid == guild.id else None)
 
         # purge restored copies whose channel was deleted
         conn = get_db()
@@ -625,7 +647,12 @@ async def vouch_backup(interaction: discord.Interaction):
 
 
 async def vouch_source_autocomplete(interaction: discord.Interaction, current: str):
-    rows = db_all("SELECT guild_id, COUNT(*) AS n FROM vouches GROUP BY guild_id ORDER BY n DESC")
+    rows = db_all(
+        "SELECT v.guild_id AS guild_id, COUNT(*) AS n FROM vouches v WHERE NOT (v.origin_key IS NOT NULL AND EXISTS ("
+        "SELECT 1 FROM vouches o WHERE o.guild_id = v.guild_id AND o.origin_key IS NULL "
+        "AND (CAST(o.guild_id AS TEXT) || ':' || CAST(o.message_id AS TEXT)) = v.origin_key)) "
+        "GROUP BY v.guild_id ORDER BY n DESC"
+    )
     choices = []
     for r in rows:
         if r["guild_id"] == interaction.guild_id:
@@ -657,14 +684,7 @@ async def vouch_restore(interaction: discord.Interaction, source: str, channel: 
         await interaction.response.send_message("A vouch backup/restore is already running here, wait for it to finish.", ephemeral=True)
         return
 
-    if source_gid == guild.id:
-        row = db_one(
-            "SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ? AND origin_key IS NULL AND channel_id != ?",
-            (source_gid, channel.id),
-        )
-    else:
-        row = db_one("SELECT COUNT(*) AS n FROM vouches WHERE guild_id = ?", (source_gid,))
-    total = row["n"] if row else 0
+    total = restorable_count(source_gid, channel.id if source_gid == guild.id else None)
     if total == 0:
         await interaction.response.send_message(f"I don't have any vouches backed up for server `{source_gid}`. Pick one from the list when you type the `source` option.", ephemeral=True)
         return
