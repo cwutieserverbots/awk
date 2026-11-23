@@ -815,12 +815,30 @@ async def tax(interaction: discord.Interaction, amount: str):
 # ───────────────────────── showcase ─────────────────────────
 
 
+# Goes in the first empty image slot (2nd, then 3rd) of every showcase. You can also type  divider
+# in either image box of /showcase_setup to choose which slot it takes.
+DIVIDER_URL = "https://cdn.discordapp.com/attachments/1574221610834067706/1574280941201915964/Untitled660.png?ex=6b0512e1&is=6b03c161&hm=604bb24125b0a1b3cb73b05951d57851770d3facd4409305816458bde9a6c9f3&"
+
+
+def is_divider(url) -> bool:
+    return (url or "").strip().lower() == "divider"
+
+
 def build_showcase_embeds(text, image2, image3, main_image=None):
     first = discord.Embed(description=text, color=COLOR)
     if main_image:
         first.set_image(url=main_image)
     embeds = [first]
-    for url in (image2, image3):
+    urls = [(u or "").strip() for u in (image2, image3)]
+    # the divider fills the first empty image slot automatically (unless you already typed "divider")
+    if not any(is_divider(u) for u in urls):
+        for i, u in enumerate(urls):
+            if not u:
+                urls[i] = "divider"
+                break
+    for url in urls:
+        if is_divider(url):
+            url = DIVIDER_URL
         if url:
             e = discord.Embed(color=COLOR)
             e.set_image(url=url)
@@ -838,11 +856,11 @@ class ShowcaseSetupModal(discord.ui.Modal, title="Showcase Template"):
     )
     image2_url = discord.ui.TextInput(
         label="2nd embed image URL (fixed)", required=False, max_length=1000,
-        placeholder="e.g.  https://i.imgur.com/abc123.gif",
+        placeholder="a link, or type  divider  to use the divider image",
     )
     image3_url = discord.ui.TextInput(
         label="3rd embed image URL (fixed, optional)", required=False, max_length=1000,
-        placeholder="e.g.  https://i.imgur.com/xyz456.gif",
+        placeholder="a link, or type  divider  to use the divider image",
     )
 
     def __init__(self, prefill: dict | None = None):
