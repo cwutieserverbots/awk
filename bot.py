@@ -923,6 +923,14 @@ async def showcase(interaction: discord.Interaction, image: discord.Attachment):
 # /queue posts the order in the queue channel. The Working on / Done buttons
 # message the customer in their ticket channel.
 
+# The divider image shown above and below the order. Save your image as divider.png
+# right next to bot.py (commit it with the bot) and it gets attached automatically.
+# Discord attachment links expire after a while, so the file is the safe option.
+# If you'd rather use a permanent link (like an imgur one), paste it into DIVIDER_URL.
+# If neither exists, the card falls back to the old emoji border.
+DIVIDER_FILE = Path(__file__).with_name("divider.png")
+DIVIDER_URL = ""
+
 ORDER_BORDER = (
     "<:dnsawk:1566483123775086812><:dnsawk2:1566483152313258125><:dnsawk:1566483123775086812>"
     "<:dnsawk2:1566483152313258125><:dnsawk:1566483123775086812><:dnsawk:1566483123775086812>"
@@ -940,18 +948,44 @@ ORDER_BUTTONS = {
 }
 
 
-def build_order_text(user_mention: str, items: str, fastpass: str, payment: str) -> str:
+def build_order_text(user_mention: str, items: str, fastpass: str, payment: str, emoji_border: bool = False) -> str:
+    border = f"{ORDER_BORDER}\n" if emoji_border else ""
     return (
-        f"{ORDER_BORDER}\n"
+        f"{border}"
         f"{ORDER_HEADER}\n"
         f": ✐ : New Order\n"
         f"{ORDER_DOT}  . . ﹒ User : {user_mention}\n\n"
         f"{ORDER_DOT}  . . ﹒ Item(s) : {items}\n\n"
         f"{ORDER_DOT}  . . ﹒ Fast Pass : {fastpass}\n\n"
         f"{ORDER_DOT}  . . ﹒ Payment : {payment}\n\n"
-        f"{ORDER_HEADER}\n"
-        f"{ORDER_BORDER}"
+        f"{ORDER_HEADER}"
+        f"{chr(10) + ORDER_BORDER if emoji_border else ''}"
     )
+
+
+def build_order_message(user_mention: str, items: str, fastpass: str, payment: str):
+    # returns (embeds, file or None). Divider image goes above and below the order card.
+    file = None
+    if DIVIDER_FILE.exists():
+        file = discord.File(DIVIDER_FILE, filename="divider.png")
+        divider = "attachment://divider.png"
+    elif DIVIDER_URL:
+        divider = DIVIDER_URL
+    else:
+        divider = None
+
+    main = discord.Embed(
+        description=build_order_text(user_mention, items, fastpass, payment, emoji_border=divider is None),
+        color=COLOR,
+    )
+    if divider is None:
+        return [main], None
+
+    top = discord.Embed(color=COLOR)
+    top.set_image(url=divider)
+    bottom = discord.Embed(color=COLOR)
+    bottom.set_image(url=divider)
+    return [top, main, bottom], file
 
 
 class OrderButton(
@@ -997,7 +1031,8 @@ class OrderButton(
         if self.key == "noted":
             return
 
-        desc = interaction.message.embeds[0].description if interaction.message.embeds else ""
+        # the divider embeds have no text, so look through all embeds for the order text
+        desc = next((e.description for e in interaction.message.embeds if e.description), "")
         m = re.search(r"<@!?(\d+)>", desc or "")
         ticket = interaction.guild.get_channel(self.ticket_id)
         if not m or ticket is None:
@@ -1063,14 +1098,17 @@ async def order(
 
     ticket_channel = interaction.channel  # the ticket is wherever /queue was used
     await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(description=build_order_text(user.mention, items, fastpass.value, payment), color=COLOR)
+    embeds, file = build_order_message(user.mention, items, fastpass.value, payment)
     view = OrderView(ticket_channel.id, disabled={"noted"})  # Noted starts greyed out
+    send_kwargs = dict(embeds=embeds, view=view)
+    if file is not None:
+        send_kwargs["file"] = file
     try:
-        await queue.send(embed=embed, view=view)
+        await queue.send(**send_kwargs)
     except discord.HTTPException as e:
         await interaction.followup.send(
-            f"couldn't post in {queue.mention}, make sure I have View Channel, Send Messages and "
-            f"Embed Links there ({e.status})",
+            f"couldn't post in {queue.mention}, make sure I have View Channel, Send Messages, "
+            f"Embed Links and Attach Files there ({e.status})",
             ephemeral=True,
         )
         return
